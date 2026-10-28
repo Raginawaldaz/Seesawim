@@ -62,13 +62,15 @@ npm start -- "D:\Seesawim\Demo.txt"
 With no argument, Seesawim opens `demo.txt` in the project root.
 
 > **Terminal tip:** Run Seesawim in an external terminal (Windows Terminal, etc.). The Cursor / VS Code integrated terminal often breaks full-screen TUI apps (garbled UI, dead keys). If `Ctrl+↑/↓` is ignored by your terminal, use the fallbacks: `Ctrl+K` for command mode, `Ctrl+J` for insert mode.
+>
+> The editor uses the terminal's **alternate screen** and the **real cursor** (hidden in command mode, sitting in the input row in insert / ex). `:q` / `:wq` / `:q!` restore your previous terminal contents. On Windows it speaks xterm VT sequences (Windows Terminal and Windows 10+ conhost).
 
 ## Modes
 
 | Mode | How to enter | What it does |
 |------|----------------|--------------|
-| **Command** | `Ctrl+↑` or `Ctrl+K` | Bottom line is empty. Keys are commands (`hjkl`, counts, `i`, `:`). Code caret is hidden; current line stays highlighted. |
-| **Insert** | `Ctrl+↓`, `Ctrl+J`, or `i` | Bottom line shows the current buffer line. Edit there; changes sync to the viewport. `Enter` moves to the next line (creates one if needed). |
+| **Command** | `Ctrl+↑` or `Ctrl+K` | Bottom line is empty. Keys are commands (`hjkl`, counts, `i`, `:`). Real cursor is hidden; current line stays highlighted. |
+| **Insert** | `Ctrl+↓`, `Ctrl+J`, or `i` | Bottom line shows the current buffer line. The real cursor sits in that row (IME follows it). Edit there; changes sync to the viewport. `Enter` moves to the next line (creates one if needed). |
 | **Ex** | `:` in command mode | Type ex commands in the bottom line (`:w`, `:q`, …), then `Enter`. |
 
 `Esc` also returns to command mode from insert / ex (handy fallback). `Ctrl+C` quits the process.
@@ -95,10 +97,12 @@ With no argument, Seesawim opens `demo.txt` in the project root.
 
 | Command | Action |
 |---------|--------|
-| `:w` | Save |
-| `:q` | Quit (refuses if there are unsaved changes) |
-| `:wq` | Save and quit |
-| `:q!` | Quit without saving |
+| `:w` | Save (`"path" NL, NB written`) |
+| `:w file` | Save as |
+| `:q` | Quit. Unsaved changes: stay in the editor and show `E37` |
+| `:wq` / `:x` | Save and quit |
+| `:q!` | Quit without saving (restores the previous terminal) |
+| `:wq!` | Write and quit |
 
 ## Project layout
 

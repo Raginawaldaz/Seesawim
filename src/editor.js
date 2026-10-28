@@ -8,7 +8,7 @@ import {
   advanceAfterEnter,
 } from './buffer.js';
 import { createCursor, clampCursor } from './cursor.js';
-import { handleCommandKey, runExCommand } from './commands.js';
+import { handleCommandKey, runExCommand, resolveSavePath } from './commands.js';
 import { modeFromBlessedKey, commandKeyFromBlessed } from './keys.js';
 import {
   createUi,
@@ -16,6 +16,9 @@ import {
   renderTitle,
   renderStatus,
   renderInput,
+  placeCursor,
+  hideRealCursor,
+  restoreTerminal,
 } from './ui.js';
 
 /**
@@ -49,56 +52,119 @@ export function startEditor(filePath) {
     filePath: resolved,
     dirty: false,
     message: exists ? '' : 'New file (not on disk yet)',
+    messageKind: 'info',
     messageTimer: null,
     inputText: '',
     inputCol: 0,
+    inputHScroll: 0,
   };
+
+  let shuttingDown = false;
+
+  function shutdown(code = 0) {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    if (state.messageTimer) {
+      clearTimeout(state.messageTimer);
+      state.messageTimer = null;
+    }
+    try {
+      screen.program.showCursor();
+      screen.program.flush();
+    } catch {
+      /* ignore */
+    }
+    try {
+      if (screen && !screen.destroyed) screen.destroy();
+    } catch {
+      /* ignore */
+    }
+    restoreTerminal(screen);
+    process.exit(code);
+  }
+
+  function crashOut(err) {
+    try {
+      if (screen && !screen.destroyed) screen.destroy();
+    } catch {
+      /* ignore */
+    }
+    restoreTerminal(screen);
+    console.error(err && err.stack ? err.stack : err);
+    process.exit(1);
+  }
+
+  process.on('exit', () => restoreTerminal(screen));
+  process.on('uncaughtException', crashOut);
+  process.on('unhandledRejection', crashOut);
 
   const api = {
-    async save() {
-      fs.mkdirSync(path.dirname(state.filePath), { recursive: true });
-      fs.writeFileSync(state.filePath, joinLines(state.lines), 'utf8');
+    async save(fileArg) {
+      const target = resolveSavePath(state.filePath, fileArg);
+      fs.mkdirSync(path.dirname(target), { recursive: true });
+      const body = joinLines(state.lines);
+      fs.writeFileSync(target, body, 'utf8');
+      state.filePath = target;
       state.dirty = false;
-      paint();
+      if (!shuttingDown) paint();
+      return {
+        path: target,
+        lines: state.lines.length,
+        bytes: Buffer.byteLength(body, 'utf8'),
+      };
     },
     async quit() {
-      screen.destroy();
-      process.exit(0);
+      shutdown(0);
     },
   };
 
-  function setMessage(text, ms = 3500) {
+  function setMessage(text, kind = 'info') {
     state.message = text || '';
-    if (state.messageTimer) clearTimeout(state.messageTimer);
-    paint();
-    if (ms && state.message) {
-      state.messageTimer = setTimeout(() => {
-        state.message = '';
-        paint();
-      }, ms);
+    state.messageKind = kind;
+    if (state.messageTimer) {
+      clearTimeout(state.messageTimer);
+      state.messageTimer = null;
     }
+    if (!shuttingDown) paint();
+  }
+
+  function clearMessage() {
+    if (!state.message) return;
+    state.message = '';
+    state.messageKind = 'info';
+    if (state.messageTimer) {
+      clearTimeout(state.messageTimer);
+      state.messageTimer = null;
+    }
+    paint();
   }
 
   function focusInput() {
-    // Keep focus on the bottom row so any leaked real cursor stays there,
-    // not in the middle of the code pane.
     inputRow.focus();
-    screen.program.hideCursor();
   }
 
   function paint() {
+    if (shuttingDown) return;
     state.cursor = clampCursor(state.cursor, state.lines);
     renderTitle(title, state.filePath, state.dirty);
     renderCode(code, state.lines, state.cursor);
     renderStatus(status, state);
-    renderInput(
+    const caret = renderInput(
       inputParts,
       state.mode === 'command' ? '' : state.inputText,
       state.inputCol,
-      state.mode
+      state.mode,
+      state
     );
+    // Hide during draw so blessed does not restore a leftover position.
+    // Don't flush yet — screen.render() sends civis in the same write.
+    hideRealCursor(screen, false);
     screen.render();
-    screen.program.hideCursor();
+    if (caret && caret.cursorVisible) {
+      placeCursor(screen, inputRow, caret.cursorCol);
+    } else {
+      hideRealCursor(screen);
+    }
   }
 
   function enterCommandMode() {
@@ -106,6 +172,7 @@ export function startEditor(filePath) {
     state.countPrefix = '';
     state.inputText = '';
     state.inputCol = 0;
+    state.inputHScroll = 0;
     focusInput();
     paint();
   }
@@ -118,6 +185,7 @@ export function startEditor(filePath) {
     state.inputText = getLine(state.lines, state.cursor.row);
     state.inputCol = Math.min(state.cursor.col, state.inputText.length);
     state.message = '';
+    state.messageKind = 'info';
     focusInput();
     paint();
   }
@@ -127,7 +195,9 @@ export function startEditor(filePath) {
     state.countPrefix = '';
     state.inputText = ':';
     state.inputCol = 1;
+    state.inputHScroll = 0;
     state.message = '';
+    state.messageKind = 'info';
     focusInput();
     paint();
   }
@@ -144,6 +214,7 @@ export function startEditor(filePath) {
     state.cursor = { row: nextRow, col: 0 };
     state.inputText = getLine(state.lines, state.cursor.row);
     state.inputCol = 0;
+    state.inputHScroll = 0;
     state.dirty = true;
     paint();
   }
@@ -151,9 +222,19 @@ export function startEditor(filePath) {
   async function submitEx() {
     let raw = state.inputText;
     if (raw.startsWith(':')) raw = raw.slice(1);
-    const result = await runExCommand(state, raw, api);
-    enterCommandMode();
-    if (result.message) setMessage(result.message);
+    try {
+      const result = await runExCommand(state, raw, api);
+      if (shuttingDown || result.quit) return;
+      enterCommandMode();
+      if (result.message) {
+        setMessage(result.message, result.ok === false ? 'error' : 'info');
+      }
+    } catch (err) {
+      if (shuttingDown) return;
+      enterCommandMode();
+      const text = err && err.message ? err.message : String(err);
+      setMessage(text, 'error');
+    }
   }
 
   // Windows often emits both "return" and "enter" for one keypress.
@@ -209,6 +290,19 @@ export function startEditor(filePath) {
     }
     if (key.full === 'right' || key.name === 'right') {
       state.inputCol = Math.min(state.inputText.length, state.inputCol + 1);
+      state.cursor.col = state.inputCol;
+      paint();
+      return;
+    }
+
+    if (key.full === 'home' || key.name === 'home') {
+      state.inputCol = 0;
+      state.cursor.col = 0;
+      paint();
+      return;
+    }
+    if (key.full === 'end' || key.name === 'end') {
+      state.inputCol = state.inputText.length;
       state.cursor.col = state.inputCol;
       paint();
       return;
@@ -277,6 +371,16 @@ export function startEditor(filePath) {
       paint();
       return;
     }
+    if (key.full === 'home' || key.name === 'home') {
+      state.inputCol = 1;
+      paint();
+      return;
+    }
+    if (key.full === 'end' || key.name === 'end') {
+      state.inputCol = state.inputText.length;
+      paint();
+      return;
+    }
 
     if (ch && ch.length === 1 && !key.ctrl && !key.meta && ch >= ' ') {
       state.inputText =
@@ -299,7 +403,7 @@ export function startEditor(filePath) {
       return;
     }
     if (key.full === 'C-c') {
-      api.quit();
+      shutdown(0);
       return;
     }
 
@@ -315,17 +419,22 @@ export function startEditor(filePath) {
       enterExMode();
       return;
     }
-    if (result.message != null) setMessage(result.message);
+    if (result.message != null && result.message !== '') {
+      setMessage(result.message, 'info');
+      return;
+    }
     paint();
   }
 
-  // Single key router on screen (keys still reach here when grabKeys is false)
   screen.on('keypress', (ch, key) => {
+    if (shuttingDown) return;
     if (!key) return;
     if (key.full === 'C-c') {
-      api.quit();
+      shutdown(0);
       return;
     }
+
+    clearMessage();
 
     if (state.mode === 'command') {
       handleCommandKeypress(ch, key);
@@ -340,11 +449,14 @@ export function startEditor(filePath) {
     }
   });
 
-  screen.key(['C-c'], () => api.quit());
+  screen.key(['C-c'], () => shutdown(0));
+  screen.on('resize', () => {
+    if (!shuttingDown) paint();
+  });
 
   screen.enableKeys();
   focusInput();
   enterCommandMode();
-  if (!exists) setMessage('New file (not on disk yet)');
+  if (!exists) setMessage('New file (not on disk yet)', 'info');
   paint();
 }

@@ -1,0 +1,18 @@
+{
+  "name": "seesawim",
+  "version": "0.2.0",
+  "description": "Seesawim — terminal text editor with code above and input below",
+  "private": true,
+  "license": "Apache-2.0",
+  "author": "Reynolds",
+  "type": "module",
+  "scripts": {
+    "start": "node src/main.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "neo-blessed": "^0.2.0"
+  }
+}

@@ -24,23 +24,51 @@ Instead of Esc / `i` as the main “flip the whole editor” gesture, Seesawim u
 
 ```bash
 npm install
-npm start
 ```
 
-Open a specific file:
+### Global command `ssw` (recommended)
+
+From the project directory, run once:
 
 ```bash
+npm run install-global
+```
+
+Then use it from any directory:
+
+```bash
+ssw                  # open the bundled demo.txt
+ssw notes.txt        # open a file in the current directory
+ssw "D:\path\a.txt"  # open an absolute path
+```
+
+If `ssw` is not found, make sure Node’s global folder (`npm config get prefix`) is on your PATH. Uninstall with: `npm run uninstall-global`.
+
+> On Windows, `npm link` often fails without symlink privileges; `install-global` avoids that (no admin / Developer Mode required).
+
+### Run inside this project only
+
+```bash
+npm start
 npm start -- path/to/file.txt
 ```
 
+PowerShell example (keep a space after `--`):
+
+```powershell
+npm start -- "D:\Seesawim\Demo.txt"
+```
+
 With no argument, Seesawim opens `demo.txt` in the project root.
+
+> **Terminal tip:** Run Seesawim in an external terminal (Windows Terminal, etc.). The Cursor / VS Code integrated terminal often breaks full-screen TUI apps (garbled UI, dead keys). If `Ctrl+↑/↓` is ignored by your terminal, use the fallbacks: `Ctrl+K` for command mode, `Ctrl+J` for insert mode.
 
 ## Modes
 
 | Mode | How to enter | What it does |
 |------|----------------|--------------|
-| **Command** | `Ctrl+↑` | Bottom line is empty. Keys are commands (`hjkl`, counts, `i`, `:`). Code caret is hidden; current line stays highlighted. |
-| **Insert** | `Ctrl+↓` or `i` | Bottom line shows the current buffer line. Edit there; changes sync to the viewport. `Enter` moves to the next line (creates one if needed). |
+| **Command** | `Ctrl+↑` or `Ctrl+K` | Bottom line is empty. Keys are commands (`hjkl`, counts, `i`, `:`). Code caret is hidden; current line stays highlighted. |
+| **Insert** | `Ctrl+↓`, `Ctrl+J`, or `i` | Bottom line shows the current buffer line. Edit there; changes sync to the viewport. `Enter` moves to the next line (creates one if needed). |
 | **Ex** | `:` in command mode | Type ex commands in the bottom line (`:w`, `:q`, …), then `Enter`. |
 
 `Esc` also returns to command mode from insert / ex (handy fallback). `Ctrl+C` quits the process.
@@ -59,8 +87,8 @@ With no argument, Seesawim opens `demo.txt` in the project root.
 
 | Key | Action |
 |-----|--------|
-| `i` or `Ctrl+↓` | Insert mode |
-| `Ctrl+↑` | Command mode |
+| `i`, `Ctrl+↓`, or `Ctrl+J` | Insert mode |
+| `Ctrl+↑` or `Ctrl+K` | Command mode |
 | `Enter` (insert) | Finish current line, go to next line |
 
 ### Ex commands

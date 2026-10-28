@@ -4,8 +4,8 @@
 
 /** @returns {'command'|'insert'|null} */
 export function modeFromBlessedKey(full) {
-  if (full === 'C-up') return 'command';
-  if (full === 'C-down') return 'insert';
+  if (full === 'C-up' || full === 'C-k') return 'command';
+  if (full === 'C-down' || full === 'C-j') return 'insert';
   return null;
 }
 

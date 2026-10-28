@@ -107,7 +107,10 @@ export function startEditor(filePath) {
       /* ignore if not reading */
     }
     clearCmdline();
+    screen.grabKeys = false;
     screen.program.hideCursor();
+    // Keep focus on the code pane so command keys are delivered
+    code.focus();
     paint();
   }
 
@@ -286,29 +289,49 @@ export function startEditor(filePath) {
     paint();
   }
 
+  // Listen on both screen and code — Cursor / Windows terminals often
+  // deliver keys only to the focused widget.
   screen.on('keypress', onCommandKeys);
+  code.on('keypress', onCommandKeys);
 
-  // Global mode toggles even when focus is odd
-  screen.key(['C-up'], () => {
+  function bindGlobal(keys, fn) {
+    screen.key(keys, fn);
+    code.key(keys, fn);
+  }
+
+  // Ctrl+Arrow can be swallowed by some terminals; also offer C-k / C-j.
+  bindGlobal(['C-up', 'C-k'], () => {
     try {
-      cmdline.cancel();
+      if (cmdline._reading) cmdline.cancel();
     } catch {
       /* ignore */
     }
     enterCommandMode();
   });
-  screen.key(['C-down'], () => {
+  bindGlobal(['C-down', 'C-j'], () => {
     try {
-      cmdline.cancel();
+      if (cmdline._reading) cmdline.cancel();
     } catch {
       /* ignore */
     }
     enterInsertMode();
   });
 
-  screen.key(['C-c'], () => {
+  bindGlobal(['C-c'], () => {
     api.quit();
   });
+
+  // Explicit command bindings (more reliable than keypress alone on Windows)
+  const commandChars = [
+    'h', 'j', 'k', 'l', 'i', ':',
+    '0', '1', '2', '3', '4', '5', '6', '7', '8', '9',
+  ];
+  for (const ch of commandChars) {
+    bindGlobal([ch], () => {
+      if (state.mode !== 'command') return;
+      onCommandKeys(ch, { name: ch, full: ch });
+    });
+  }
 
   enterCommandMode();
   if (!exists) setMessage('New file (not on disk yet)');

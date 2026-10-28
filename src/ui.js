@@ -11,7 +11,12 @@ export function createUi() {
   const screen = blessed.screen({
     smartCSR: true,
     fullUnicode: true,
+    forceUnicode: true,
+    ignoreLocked: true,
+    dockBorders: true,
     title: 'Seesawim',
+    input: process.stdin,
+    output: process.stdout,
     cursor: {
       artificial: true,
       shape: 'line',
@@ -42,8 +47,10 @@ export function createUi() {
     tags: true,
     scrollable: true,
     alwaysScroll: true,
-    keys: false,
+    keys: true,
+    keyable: true,
     mouse: true,
+    focusable: true,
     scrollbar: {
       ch: ' ',
       track: { bg: 'grey' },

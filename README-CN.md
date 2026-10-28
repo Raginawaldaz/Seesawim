@@ -24,23 +24,51 @@
 
 ```bash
 npm install
-npm start
 ```
 
-打开指定文件：
+### 全局命令 `ssw`（推荐）
+
+在项目目录执行一次：
 
 ```bash
+npm run install-global
+```
+
+之后任意目录都能用：
+
+```bash
+ssw                  # 打开项目自带的 demo.txt
+ssw notes.txt        # 打开当前目录下的文件
+ssw "D:\path\a.txt"  # 打开绝对路径
+```
+
+若提示找不到 `ssw`，确认 Node 的全局目录（`npm config get prefix`）已在 PATH 里。卸载：`npm run uninstall-global`。
+
+> Windows 上若 `npm link` 因 symlink 权限失败，请用上面的 `install-global`（不依赖管理员 / 开发者模式）。
+
+### 仅在本项目内启动
+
+```bash
+npm start
 npm start -- path/to/file.txt
 ```
 
+PowerShell 示例（注意 `--` 后有空格）：
+
+```powershell
+npm start -- "D:\Seesawim\Demo.txt"
+```
+
 不传参数时，默认打开项目根目录的 `demo.txt`。
+
+> **终端提示：** 请在 **Windows Terminal**、系统自带终端等外部终端里运行。Cursor / VS Code 内置终端对全屏 TUI（neo-blessed）支持很差，经常出现画面错乱、按键无响应。若 `Ctrl+↑/↓` 无效，可用备用键：`Ctrl+K` 进指令模式，`Ctrl+J` 进输入模式。
 
 ## 模式说明
 
 | 模式 | 如何进入 | 做什么 |
 |------|----------|--------|
-| **指令（Command）** | `Ctrl+↑` | 底部输入行清空。按键当指令（`hjkl`、数字前缀、`i`、`:`）。代码区不显示闪烁光标，仅高亮当前行。 |
-| **输入（Insert）** | `Ctrl+↓` 或 `i` | 底部显示当前行全文，在此编辑并同步到上方。`Enter` 切到下一行（必要时新建空行）。 |
+| **指令（Command）** | `Ctrl+↑` 或 `Ctrl+K` | 底部输入行清空。按键当指令（`hjkl`、数字前缀、`i`、`:`）。代码区不显示闪烁光标，仅高亮当前行。 |
+| **输入（Insert）** | `Ctrl+↓`、`Ctrl+J` 或 `i` | 底部显示当前行全文，在此编辑并同步到上方。`Enter` 切到下一行（必要时新建空行）。 |
 | **Ex** | 指令模式下按 `:` | 在底部输入 `:w`、`:q` 等，回车执行。 |
 
 从输入 / Ex 回到指令模式也可用 `Esc`（备用）。`Ctrl+C` 直接退出进程。
@@ -59,8 +87,8 @@ npm start -- path/to/file.txt
 
 | 按键 | 作用 |
 |------|------|
-| `i` 或 `Ctrl+↓` | 进入输入模式 |
-| `Ctrl+↑` | 进入指令模式 |
+| `i`、`Ctrl+↓` 或 `Ctrl+J` | 进入输入模式 |
+| `Ctrl+↑` 或 `Ctrl+K` | 进入指令模式 |
 | `Enter`（输入模式） | 提交当前行并前往下一行 |
 
 ### Ex 命令

@@ -7,7 +7,7 @@ const root = path.resolve(__dirname, '..');
 const defaultFile = path.join(root, 'demo.txt');
 
 const fileArg = process.argv[2];
-const target = fileArg ? path.resolve(fileArg) : defaultFile;
+const target = fileArg ? path.resolve(process.cwd(), fileArg) : defaultFile;
 
 try {
   startEditor(target);

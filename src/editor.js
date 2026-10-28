@@ -15,11 +15,12 @@ import {
   renderCode,
   renderTitle,
   renderStatus,
-  setInputActive,
+  renderInput,
 } from './ui.js';
 
 /**
  * Run the Seesawim TUI editor on a file path.
+ * All keys go through one screen handler — no nested textbox.
  */
 export function startEditor(filePath) {
   const resolved = path.resolve(filePath);
@@ -37,10 +38,11 @@ export function startEditor(filePath) {
   }
 
   const ui = createUi();
-  const { screen, title, code, status, inputFrame, cmdline } = ui;
+  const { screen, title, code, status, ruleTop, inputRow, ruleBottom } = ui;
+  const inputParts = { ruleTop, inputRow, ruleBottom, screen };
 
   const state = {
-    mode: 'command',
+    mode: 'command', // command | insert | ex
     lines: splitContent(content),
     cursor: createCursor(0, 0),
     countPrefix: '',
@@ -48,8 +50,8 @@ export function startEditor(filePath) {
     dirty: false,
     message: exists ? '' : 'New file (not on disk yet)',
     messageTimer: null,
-    _suppressCmdKeys: false,
-    _ignoreReadCallback: false,
+    inputText: '',
+    inputCol: 0,
   };
 
   const api = {
@@ -77,197 +79,216 @@ export function startEditor(filePath) {
     }
   }
 
+  function focusInput() {
+    // Keep focus on the bottom row so any leaked real cursor stays there,
+    // not in the middle of the code pane.
+    inputRow.focus();
+    screen.program.hideCursor();
+  }
+
   function paint() {
     state.cursor = clampCursor(state.cursor, state.lines);
     renderTitle(title, state.filePath, state.dirty);
-    renderCode(code, state.lines, state.cursor, {
-      showCaret: false,
-    });
+    renderCode(code, state.lines, state.cursor);
     renderStatus(status, state);
-    setInputActive(inputFrame, state.mode === 'insert' || state.mode === 'ex');
+    renderInput(
+      inputParts,
+      state.mode === 'command' ? '' : state.inputText,
+      state.inputCol,
+      state.mode
+    );
     screen.render();
-  }
-
-  function clearCmdline() {
-    state._suppressCmdKeys = true;
-    cmdline.clearValue();
-    cmdline.setValue('');
-    state._suppressCmdKeys = false;
-  }
-
-  function setCmdlineValue(value) {
-    state._suppressCmdKeys = true;
-    cmdline.setValue(value);
-    state._suppressCmdKeys = false;
-  }
-
-  /** Stop textbox readInput without treating it as user cancel. */
-  function stopReading() {
-    if (!cmdline._reading) return;
-    state._ignoreReadCallback = true;
-    try {
-      cmdline.cancel();
-    } catch {
-      /* ignore */
-    }
-    state._ignoreReadCallback = false;
+    screen.program.hideCursor();
   }
 
   function enterCommandMode() {
-    if (state.mode === 'command' && !cmdline._reading) {
-      paint();
-      return;
-    }
-    stopReading();
     state.mode = 'command';
     state.countPrefix = '';
-    clearCmdline();
-    screen.grabKeys = false;
-    screen.program.hideCursor();
-    code.focus();
+    state.inputText = '';
+    state.inputCol = 0;
+    focusInput();
     paint();
   }
 
   function enterInsertMode() {
-    if (state.mode === 'insert' && cmdline._reading) {
-      // Already inserting — ignore repeat Ctrl+Down / C-j
-      return;
-    }
-    stopReading();
+    if (state.mode === 'insert') return;
     state.mode = 'insert';
     state.countPrefix = '';
     state.cursor = clampCursor(state.cursor, state.lines);
-    const line = getLine(state.lines, state.cursor.row);
-    setCmdlineValue(line);
-    screen.program.showCursor();
+    state.inputText = getLine(state.lines, state.cursor.row);
+    state.inputCol = Math.min(state.cursor.col, state.inputText.length);
     state.message = '';
+    focusInput();
     paint();
-    // Defer so cancel/focus settle before grabbing keys
-    setImmediate(() => {
-      if (state.mode !== 'insert') return;
-      cmdline.focus();
-      readCmdline();
-      paint();
-    });
   }
 
   function enterExMode() {
-    stopReading();
     state.mode = 'ex';
     state.countPrefix = '';
-    setCmdlineValue(':');
-    screen.program.showCursor();
+    state.inputText = ':';
+    state.inputCol = 1;
     state.message = '';
+    focusInput();
     paint();
-    setImmediate(() => {
-      if (state.mode !== 'ex') return;
-      cmdline.focus();
-      readCmdline();
-      paint();
-    });
   }
 
-  function syncInsertFromCmdline() {
-    if (state.mode !== 'insert' || state._suppressCmdKeys) return;
-    const value = cmdline.getValue();
-    setLine(state.lines, state.cursor.row, value);
-    state.cursor.col = value.length;
+  function syncInsertToBuffer() {
+    setLine(state.lines, state.cursor.row, state.inputText);
+    state.cursor.col = state.inputCol;
     state.dirty = true;
-    paint();
   }
 
   function insertEnter() {
-    const value = cmdline.getValue();
-    setLine(state.lines, state.cursor.row, value);
+    syncInsertToBuffer();
     const nextRow = advanceAfterEnter(state.lines, state.cursor.row);
     state.cursor = { row: nextRow, col: 0 };
+    state.inputText = getLine(state.lines, state.cursor.row);
+    state.inputCol = 0;
     state.dirty = true;
-    const line = getLine(state.lines, state.cursor.row);
-    setCmdlineValue(line);
     paint();
-    setImmediate(() => {
-      if (state.mode !== 'insert') return;
-      readCmdline();
-    });
   }
 
-  async function submitEx(rawValue) {
-    let raw = rawValue ?? cmdline.getValue();
+  async function submitEx() {
+    let raw = state.inputText;
     if (raw.startsWith(':')) raw = raw.slice(1);
     const result = await runExCommand(state, raw, api);
-    const name = raw.trim();
-    if (result.ok && (name === 'w' || name === 'write')) {
-      enterCommandMode();
-      setMessage(result.message || '');
-      return;
-    }
     enterCommandMode();
     if (result.message) setMessage(result.message);
   }
 
-  function readCmdline() {
-    if (state.mode !== 'insert' && state.mode !== 'ex') return;
-    if (cmdline._reading) return;
-
-    cmdline.readInput((err, value) => {
-      if (state._ignoreReadCallback) return;
-
-      // escape / cancel => (null, null); Enter => (null, string)
-      if (err || value == null) {
-        if (state.mode === 'insert' || state.mode === 'ex') {
-          enterCommandMode();
-        }
-        return;
-      }
-      if (state.mode === 'insert') {
-        setCmdlineValue(value);
-        insertEnter();
-        return;
-      }
-      if (state.mode === 'ex') {
-        submitEx(value);
-      }
-    });
+  // Windows often emits both "return" and "enter" for one keypress.
+  let lastEnterAt = 0;
+  function consumeEnter(key, ch) {
+    const isEnter =
+      key.name === 'enter' ||
+      key.name === 'return' ||
+      key.full === 'enter' ||
+      key.full === 'return' ||
+      ch === '\r' ||
+      ch === '\n';
+    if (!isEnter) return false;
+    const now = Date.now();
+    if (now - lastEnterAt < 80) return true; // swallow duplicate
+    lastEnterAt = now;
+    return 'fire';
   }
 
-  cmdline.on('keypress', (ch, key) => {
-    if (state._suppressCmdKeys || !key) return;
-
+  function handleInsertKey(ch, key) {
     const toggle = modeFromBlessedKey(key.full);
-    if (toggle === 'command') {
+    if (toggle === 'command' || key.full === 'escape') {
+      syncInsertToBuffer();
       enterCommandMode();
       return;
     }
-    if (toggle === 'insert') {
-      // Already handled by global binder; avoid re-entry from textbox
+    if (toggle === 'insert') return;
+
+    const enter = consumeEnter(key, ch);
+    if (enter === 'fire') {
+      insertEnter();
+      return;
+    }
+    if (enter) return;
+
+    if (key.full === 'backspace' || key.name === 'backspace') {
+      if (state.inputCol > 0) {
+        state.inputText =
+          state.inputText.slice(0, state.inputCol - 1) +
+          state.inputText.slice(state.inputCol);
+        state.inputCol -= 1;
+        syncInsertToBuffer();
+        paint();
+      }
       return;
     }
 
-    if (key.full === 'escape') {
+    if (key.full === 'left' || key.name === 'left') {
+      state.inputCol = Math.max(0, state.inputCol - 1);
+      state.cursor.col = state.inputCol;
+      paint();
+      return;
+    }
+    if (key.full === 'right' || key.name === 'right') {
+      state.inputCol = Math.min(state.inputText.length, state.inputCol + 1);
+      state.cursor.col = state.inputCol;
+      paint();
+      return;
+    }
+
+    // Printable character (skip controls / CR / LF)
+    if (
+      ch &&
+      ch.length === 1 &&
+      !key.ctrl &&
+      !key.meta &&
+      ch >= ' ' &&
+      ch !== '\r' &&
+      ch !== '\n'
+    ) {
+      state.inputText =
+        state.inputText.slice(0, state.inputCol) +
+        ch +
+        state.inputText.slice(state.inputCol);
+      state.inputCol += 1;
+      syncInsertToBuffer();
+      paint();
+    }
+  }
+
+  function handleExKey(ch, key) {
+    const toggle = modeFromBlessedKey(key.full);
+    if (toggle === 'command' || key.full === 'escape') {
       enterCommandMode();
       return;
     }
 
-    if (state.mode === 'ex') {
-      setImmediate(() => {
-        if (state.mode !== 'ex') return;
-        const v = cmdline.getValue();
-        if (!v.startsWith(':')) {
-          setCmdlineValue(':' + v.replace(/^:+/, ''));
+    const enter = consumeEnter(key, ch);
+    if (enter === 'fire') {
+      submitEx();
+      return;
+    }
+    if (enter) return;
+
+    if (key.full === 'backspace' || key.name === 'backspace') {
+      if (state.inputText === ':' && state.inputCol <= 1) {
+        enterCommandMode();
+        return;
+      }
+      if (state.inputCol > 0) {
+        state.inputText =
+          state.inputText.slice(0, state.inputCol - 1) +
+          state.inputText.slice(state.inputCol);
+        state.inputCol -= 1;
+        if (!state.inputText.startsWith(':')) {
+          state.inputText = ':' + state.inputText.replace(/^:+/, '');
+          state.inputCol = Math.min(state.inputCol + 1, state.inputText.length);
         }
-      });
+        paint();
+      }
       return;
     }
 
-    if (state.mode === 'insert') {
-      setImmediate(() => syncInsertFromCmdline());
+    if (key.full === 'left' || key.name === 'left') {
+      state.inputCol = Math.max(1, state.inputCol - 1); // keep leading ':'
+      paint();
+      return;
     }
-  });
+    if (key.full === 'right' || key.name === 'right') {
+      state.inputCol = Math.min(state.inputText.length, state.inputCol + 1);
+      paint();
+      return;
+    }
 
-  function onCommandKeys(ch, key) {
-    if (state.mode !== 'command') return;
-    if (!key) return;
+    if (ch && ch.length === 1 && !key.ctrl && !key.meta && ch >= ' ') {
+      state.inputText =
+        state.inputText.slice(0, state.inputCol) +
+        ch +
+        state.inputText.slice(state.inputCol);
+      state.inputCol += 1;
+      paint();
+    }
+  }
 
+  function handleCommandKeypress(ch, key) {
     const toggle = modeFromBlessedKey(key.full);
     if (toggle === 'command') {
       enterCommandMode();
@@ -277,7 +298,6 @@ export function startEditor(filePath) {
       enterInsertMode();
       return;
     }
-
     if (key.full === 'C-c') {
       api.quit();
       return;
@@ -299,31 +319,31 @@ export function startEditor(filePath) {
     paint();
   }
 
-  // Command keys only on the focused code pane (single listener — no double-fire).
-  code.on('keypress', onCommandKeys);
+  // Single key router on screen (keys still reach here when grabKeys is false)
+  screen.on('keypress', (ch, key) => {
+    if (!key) return;
+    if (key.full === 'C-c') {
+      api.quit();
+      return;
+    }
 
-  // Guard against the same physical key being delivered twice to screen.key
-  let modeToggleLock = false;
-  function withModeLock(fn) {
-    return () => {
-      if (modeToggleLock) return;
-      modeToggleLock = true;
-      try {
-        fn();
-      } finally {
-        setImmediate(() => {
-          modeToggleLock = false;
-        });
-      }
-    };
-  }
+    if (state.mode === 'command') {
+      handleCommandKeypress(ch, key);
+      return;
+    }
+    if (state.mode === 'insert') {
+      handleInsertKey(ch, key);
+      return;
+    }
+    if (state.mode === 'ex') {
+      handleExKey(ch, key);
+    }
+  });
 
-  // Mode toggles once on screen only (binding on both screen+code caused
-  // enterInsert → cancel → crash on the second Ctrl+Down).
-  screen.key(['C-up', 'C-k'], withModeLock(() => enterCommandMode()));
-  screen.key(['C-down', 'C-j'], withModeLock(() => enterInsertMode()));
   screen.key(['C-c'], () => api.quit());
 
+  screen.enableKeys();
+  focusInput();
   enterCommandMode();
   if (!exists) setMessage('New file (not on disk yet)');
   paint();

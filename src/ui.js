@@ -4,20 +4,27 @@ const require = createRequire(import.meta.url);
 const blessed = require('neo-blessed');
 
 /**
- * Build the Seesawim TUI layout.
- * Bottom input is a bordered frame with a `>` prompt (no blue fill).
- * @returns {{ screen, title, code, status, inputFrame, prompt, cmdline, blessed }}
+ * Flat TUI layout — no nested textbox (avoids Windows cursor bugs).
+ * Bottom “box” is three plain rows: top rule, "> input", bottom rule.
  */
 export function createUi() {
   const screen = blessed.screen({
     smartCSR: true,
     fullUnicode: true,
-    forceUnicode: true,
-    ignoreLocked: true,
-    dockBorders: true,
+    ignoreLocked: ['C-c', 'C-up', 'C-down', 'C-k', 'C-j', 'escape'],
     title: 'Seesawim',
     input: process.stdin,
     output: process.stdout,
+  });
+
+  // Hide the real terminal cursor; we draw our own block in the input row.
+  screen.program.hideCursor();
+  screen.on('render', () => {
+    try {
+      screen.program.hideCursor();
+    } catch {
+      /* ignore */
+    }
   });
 
   const title = blessed.box({
@@ -30,7 +37,7 @@ export function createUi() {
     style: { fg: 'white', bg: 'black' },
   });
 
-  // title(1) + status(1) + input frame(3) = 5
+  // title(1) + status(1) + frame(3) = 5
   const code = blessed.box({
     parent: screen,
     top: 1,
@@ -40,14 +47,10 @@ export function createUi() {
     tags: true,
     scrollable: true,
     alwaysScroll: true,
-    keys: true,
-    keyable: true,
-    mouse: true,
-    focusable: true,
-    scrollbar: {
-      ch: '│',
-      style: { fg: 'grey' },
-    },
+    // Not keyable — focusing the code pane parks the real cursor mid-screen
+    keys: false,
+    keyable: false,
+    mouse: false,
     style: { fg: 'white', bg: 'black' },
   });
 
@@ -61,62 +64,53 @@ export function createUi() {
     style: { fg: 'grey', bg: 'black' },
   });
 
-  const inputFrame = blessed.box({
+  const ruleTop = blessed.box({
+    parent: screen,
+    bottom: 2,
+    left: 0,
+    width: '100%',
+    height: 1,
+    tags: false,
+    style: { fg: 'white', bg: 'black' },
+  });
+
+  const inputRow = blessed.box({
+    parent: screen,
+    bottom: 1,
+    left: 0,
+    width: '100%',
+    height: 1,
+    tags: true,
+    keys: true,
+    keyable: true,
+    style: { fg: 'white', bg: 'black' },
+  });
+
+  const ruleBottom = blessed.box({
     parent: screen,
     bottom: 0,
     left: 0,
     width: '100%',
-    height: 3,
-    tags: false,
-    border: {
-      type: 'line',
-    },
-    style: {
-      fg: 'white',
-      bg: 'black',
-      border: { fg: 'white' },
-    },
-  });
-
-  const prompt = blessed.box({
-    parent: inputFrame,
-    top: 0,
-    left: 0,
-    width: 2,
     height: 1,
-    content: '>',
+    tags: false,
     style: { fg: 'white', bg: 'black' },
   });
 
-  const cmdline = blessed.textbox({
-    parent: inputFrame,
-    top: 0,
-    left: 2,
-    width: '100%-2',
-    height: 1,
-    inputOnFocus: false,
-    keys: true,
-    mouse: true,
-    style: {
-      fg: 'white',
-      bg: 'black',
-    },
-  });
-
-  return { screen, title, code, status, inputFrame, prompt, cmdline, blessed };
+  return { screen, title, code, status, ruleTop, inputRow, ruleBottom, blessed };
 }
 
-/** Escape blessed tag-sensitive braces in plain text. */
 export function escapeTags(text) {
   return String(text).replace(/[{}]/g, (ch) => `{'${ch}'}`);
 }
 
-/**
- * Render buffer. Current line uses a `>` marker — no blue background.
- */
-export function renderCode(codeBox, lines, cursor, { showCaret = false } = {}) {
+function ruleLine(width) {
+  const w = Math.max(1, width || 40);
+  return '-'.repeat(w);
+}
+
+export function renderCode(codeBox, lines, cursor) {
   const row = cursor.row;
-  const gutterWidth = Math.max(3, String(lines.length).length + 1);
+  const gutterWidth = Math.max(3, String(Math.max(lines.length, 1)).length + 1);
   const out = [];
 
   for (let i = 0; i < lines.length; i++) {
@@ -124,48 +118,72 @@ export function renderCode(codeBox, lines, cursor, { showCaret = false } = {}) {
     const num = String(i + 1).padStart(gutterWidth, ' ');
     const isCurrent = i === row;
     const marker = isCurrent ? '>' : ' ';
-
-    let body = escapeTags(line);
-    if (isCurrent && showCaret) {
-      const col = Math.min(cursor.col, line.length);
-      const before = escapeTags(line.slice(0, col));
-      const at = line.slice(col, col + 1);
-      const after = escapeTags(line.slice(col + 1));
-      const caretChar = at ? escapeTags(at) : ' ';
-      body = `${before}{inverse}${caretChar}{/inverse}${after}`;
-    }
+    const body = escapeTags(line) || ' ';
 
     if (isCurrent) {
-      out.push(`{white-fg}${num}{/white-fg} {bold}{white-fg}${marker}{/white-fg}{/bold} ${body || ' '}`);
+      out.push(`{white-fg}${num}{/white-fg} {bold}>{/bold} ${body}`);
     } else {
       out.push(`{grey-fg}${num}{/grey-fg} ${marker} ${body}`);
     }
   }
 
   codeBox.setContent(out.join('\n') || ' ');
-  const height = typeof codeBox.height === 'number' ? codeBox.height : codeBox.lpos?.height || 20;
-  const viewH = Math.max(1, height);
-  const target = Math.max(0, row - Math.floor(viewH / 2));
-  codeBox.setScroll(target);
+  const height = codeBox.lpos?.height || codeBox.height || 20;
+  const viewH = Math.max(1, typeof height === 'number' ? height : 20);
+  codeBox.setScroll(Math.max(0, row - Math.floor(viewH / 2)));
 }
 
 export function renderTitle(titleBox, filePath, dirty) {
-  const mark = dirty ? ' {red-fg}●{/red-fg}' : '';
-  titleBox.setContent(
-    ` {bold}Seesawim{/bold}  {grey-fg}${escapeTags(filePath || '(untitled)')}{/grey-fg}${mark}`
-  );
+  // ASCII dirty mark only — Unicode ● breaks column math on Windows consoles
+  const mark = dirty ? ' *' : '';
+  const pathText = escapeTags(filePath || '(untitled)');
+  titleBox.setContent(` Seesawim  ${pathText}${mark}`);
 }
 
 export function renderStatus(statusBox, state) {
   const modeNames = { command: 'COMMAND', insert: 'INSERT', ex: 'EX' };
   const mode = modeNames[state.mode] || state.mode.toUpperCase();
   const pos = `${state.cursor.row + 1}:${state.cursor.col + 1}`;
-  const count = state.countPrefix ? ` ×${state.countPrefix}` : '';
+  const count = state.countPrefix ? ` x${state.countPrefix}` : '';
   const msg = state.message ? `  ${escapeTags(state.message)}` : '';
   statusBox.setContent(` ${mode}  ${pos}${count}${msg}`);
 }
 
-/** Show / hide the block caret feel on the framed input. */
-export function setInputActive(inputFrame, active) {
-  inputFrame.style.border = { fg: active ? 'white' : 'grey' };
+/**
+ * Draw the framed input row:  > text█
+ * Border: white while inserting text; red in command/ex as a reminder.
+ * @param {object} parts
+ * @param {string} text
+ * @param {number} caretCol
+ * @param {'command'|'insert'|'ex'} mode
+ */
+export function renderInput(parts, text, caretCol, mode) {
+  const { ruleTop, inputRow, ruleBottom, screen } = parts;
+  const width = screen.width || 80;
+  // White only while typing buffer text (insert).
+  // Red otherwise — reminds you you're in command / ex, not editing.
+  const typingText = mode === 'insert';
+  const borderFg = typingText ? 'white' : 'red';
+  const prompt = typingText ? '>' : '{red-fg}>{/red-fg}';
+
+  ruleTop.setContent(ruleLine(width));
+  ruleTop.style.fg = borderFg;
+  ruleBottom.setContent(ruleLine(width));
+  ruleBottom.style.fg = borderFg;
+
+  const value = String(text ?? '');
+  const col = Math.max(0, Math.min(caretCol ?? value.length, value.length));
+  const before = escapeTags(value.slice(0, col));
+  const at = value.slice(col, col + 1);
+  const after = escapeTags(value.slice(col + 1));
+  const showCaret = mode === 'insert' || mode === 'ex';
+  const caret = showCaret
+    ? `{inverse}${at ? escapeTags(at) : ' '}{/inverse}`
+    : '';
+
+  if (mode === 'insert' || mode === 'ex') {
+    inputRow.setContent(`${prompt} ${before}${caret}${after}`);
+  } else {
+    inputRow.setContent(`${prompt} `);
+  }
 }

@@ -1,25 +1,13 @@
 import fs from 'fs';
 import path from 'path';
-import {
-  splitContent,
-  joinLines,
-  getLine,
-  setLine,
-  advanceAfterEnter,
-} from './buffer.js';
+import { TextBuffer } from './buffer.js';
 import { createCursor, clampCursor } from './cursor.js';
-import { handleCommandKey, runExCommand, resolveSavePath } from './commands.js';
+import { handleCommandKey } from './commands.js';
+import { runExCommand, resolveSavePath } from './ex.js';
 import { modeFromBlessedKey, commandKeyFromBlessed } from './keys.js';
-import {
-  createUi,
-  renderCode,
-  renderTitle,
-  renderStatus,
-  renderInput,
-  placeCursor,
-  hideRealCursor,
-  restoreTerminal,
-} from './ui.js';
+import { createUi, restoreTerminal } from './ui/screen.js';
+import { createRenderer } from './ui/renderer.js';
+import { createExtensionHost } from './extensions.js';
 
 /**
  * Run the Seesawim TUI editor on a file path.
@@ -40,13 +28,13 @@ export function startEditor(filePath) {
     }
   }
 
+  const buffer = TextBuffer.fromString(content);
   const ui = createUi();
-  const { screen, title, code, status, ruleTop, inputRow, ruleBottom } = ui;
-  const inputParts = { ruleTop, inputRow, ruleBottom, screen };
+  const { screen, inputRow } = ui;
 
   const state = {
     mode: 'command', // command | insert | ex
-    lines: splitContent(content),
+    buffer,
     cursor: createCursor(0, 0),
     countPrefix: '',
     filePath: resolved,
@@ -60,10 +48,43 @@ export function startEditor(filePath) {
   };
 
   let shuttingDown = false;
+  let host = null;
+  let renderer = null;
+
+  function paint() {
+    if (renderer) renderer.requestPaint();
+  }
+
+  function paintSync() {
+    if (renderer) renderer.paintSync();
+  }
+
+  function setMessage(text, kind = 'info') {
+    state.message = text || '';
+    state.messageKind = kind;
+    if (state.messageTimer) {
+      clearTimeout(state.messageTimer);
+      state.messageTimer = null;
+    }
+    if (!shuttingDown) paint();
+  }
+
+  host = createExtensionHost({
+    state,
+    buffer,
+    paint,
+    setMessage,
+  });
+
+  renderer = createRenderer(ui, () => state, host.hooks);
+  if (host.settingsError) {
+    setMessage(host.settingsError, 'error');
+  }
 
   function shutdown(code = 0) {
     if (shuttingDown) return;
     shuttingDown = true;
+    if (renderer) renderer.setShuttingDown(true);
     if (state.messageTimer) {
       clearTimeout(state.messageTimer);
       state.messageTimer = null;
@@ -102,14 +123,15 @@ export function startEditor(filePath) {
     async save(fileArg) {
       const target = resolveSavePath(state.filePath, fileArg);
       fs.mkdirSync(path.dirname(target), { recursive: true });
-      const body = joinLines(state.lines);
+      const body = buffer.toString();
       fs.writeFileSync(target, body, 'utf8');
       state.filePath = target;
       state.dirty = false;
+      host.emit('save', { path: target });
       if (!shuttingDown) paint();
       return {
         path: target,
-        lines: state.lines.length,
+        lines: buffer.lineCount,
         bytes: Buffer.byteLength(body, 'utf8'),
       };
     },
@@ -118,57 +140,19 @@ export function startEditor(filePath) {
     },
   };
 
-  function setMessage(text, kind = 'info') {
-    state.message = text || '';
-    state.messageKind = kind;
-    if (state.messageTimer) {
-      clearTimeout(state.messageTimer);
-      state.messageTimer = null;
-    }
-    if (!shuttingDown) paint();
-  }
-
-  function clearMessage() {
-    if (!state.message) return;
-    state.message = '';
-    state.messageKind = 'info';
-    if (state.messageTimer) {
-      clearTimeout(state.messageTimer);
-      state.messageTimer = null;
-    }
-    paint();
-  }
-
   function focusInput() {
     inputRow.focus();
   }
 
-  function paint() {
-    if (shuttingDown) return;
-    state.cursor = clampCursor(state.cursor, state.lines);
-    renderTitle(title, state.filePath, state.dirty);
-    renderCode(code, state.lines, state.cursor);
-    renderStatus(status, state);
-    const caret = renderInput(
-      inputParts,
-      state.mode === 'command' ? '' : state.inputText,
-      state.inputCol,
-      state.mode,
-      state
-    );
-    // Hide during draw so blessed does not restore a leftover position.
-    // Don't flush yet — screen.render() sends civis in the same write.
-    hideRealCursor(screen, false);
-    screen.render();
-    if (caret && caret.cursorVisible) {
-      placeCursor(screen, inputRow, caret.cursorCol);
-    } else {
-      hideRealCursor(screen);
-    }
+  function setMode(next) {
+    const from = state.mode;
+    if (from === next) return;
+    state.mode = next;
+    host.emit('modeChange', { from, to: next });
   }
 
   function enterCommandMode() {
-    state.mode = 'command';
+    setMode('command');
     state.countPrefix = '';
     state.inputText = '';
     state.inputCol = 0;
@@ -179,10 +163,10 @@ export function startEditor(filePath) {
 
   function enterInsertMode() {
     if (state.mode === 'insert') return;
-    state.mode = 'insert';
+    setMode('insert');
     state.countPrefix = '';
-    state.cursor = clampCursor(state.cursor, state.lines);
-    state.inputText = getLine(state.lines, state.cursor.row);
+    state.cursor = clampCursor(state.cursor, buffer);
+    state.inputText = buffer.getLine(state.cursor.row);
     state.inputCol = Math.min(state.cursor.col, state.inputText.length);
     state.message = '';
     state.messageKind = 'info';
@@ -191,7 +175,7 @@ export function startEditor(filePath) {
   }
 
   function enterExMode() {
-    state.mode = 'ex';
+    setMode('ex');
     state.countPrefix = '';
     state.inputText = ':';
     state.inputCol = 1;
@@ -203,20 +187,42 @@ export function startEditor(filePath) {
   }
 
   function syncInsertToBuffer() {
-    setLine(state.lines, state.cursor.row, state.inputText);
+    const before = { row: state.cursor.row, col: state.cursor.col };
+    buffer.setLine(state.cursor.row, state.inputText, {
+      cursorBefore: before,
+      cursorAfter: { row: state.cursor.row, col: state.inputCol },
+    });
     state.cursor.col = state.inputCol;
     state.dirty = true;
   }
 
   function insertEnter() {
     syncInsertToBuffer();
-    const nextRow = advanceAfterEnter(state.lines, state.cursor.row);
-    state.cursor = { row: nextRow, col: 0 };
-    state.inputText = getLine(state.lines, state.cursor.row);
+    const before = { row: state.cursor.row, col: state.inputCol };
+    const next = buffer.splitLine(state.cursor.row, state.inputCol, {
+      cursorBefore: before,
+    });
+    state.cursor = next;
+    state.inputText = buffer.getLine(state.cursor.row);
     state.inputCol = 0;
     state.inputHScroll = 0;
     state.dirty = true;
     paint();
+  }
+
+  function insertBackspaceJoin() {
+    if (state.cursor.row <= 0) return false;
+    syncInsertToBuffer();
+    const before = { row: state.cursor.row, col: 0 };
+    const next = buffer.joinWithPrevious(state.cursor.row, { cursorBefore: before });
+    if (!next) return false;
+    state.cursor = next;
+    state.inputText = buffer.getLine(state.cursor.row);
+    state.inputCol = next.col;
+    state.inputHScroll = 0;
+    state.dirty = true;
+    paint();
+    return true;
   }
 
   async function submitEx() {
@@ -238,19 +244,31 @@ export function startEditor(filePath) {
   }
 
   // Windows often emits both "return" and "enter" for one keypress.
+  // Only swallow the paired alternate name within 80ms — never same-name repeats.
   let lastEnterAt = 0;
+  let lastEnterName = '';
   function consumeEnter(key, ch) {
-    const isEnter =
-      key.name === 'enter' ||
-      key.name === 'return' ||
-      key.full === 'enter' ||
-      key.full === 'return' ||
-      ch === '\r' ||
-      ch === '\n';
-    if (!isEnter) return false;
+    const name =
+      key.name === 'enter' || key.full === 'enter'
+        ? 'enter'
+        : key.name === 'return' || key.full === 'return'
+          ? 'return'
+          : ch === '\r'
+            ? 'return'
+            : ch === '\n'
+              ? 'enter'
+              : null;
+    if (!name) return false;
     const now = Date.now();
-    if (now - lastEnterAt < 80) return true; // swallow duplicate
+    if (
+      now - lastEnterAt < 80 &&
+      lastEnterName &&
+      lastEnterName !== name
+    ) {
+      return true; // swallow duplicate pair
+    }
     lastEnterAt = now;
+    lastEnterName = name;
     return 'fire';
   }
 
@@ -278,6 +296,8 @@ export function startEditor(filePath) {
         state.inputCol -= 1;
         syncInsertToBuffer();
         paint();
+      } else {
+        insertBackspaceJoin();
       }
       return;
     }
@@ -407,6 +427,28 @@ export function startEditor(filePath) {
       return;
     }
 
+    // Extensions first (count digits, undo u / Ctrl+R, …)
+    const extResult = host.runCommandKeys(
+      commandKeyFromBlessed(ch, key) || '',
+      key
+    );
+    if (extResult && extResult.handled) {
+      if (extResult.enterInsert) {
+        enterInsertMode();
+        return;
+      }
+      if (extResult.enterEx) {
+        enterExMode();
+        return;
+      }
+      if (extResult.message != null && extResult.message !== '') {
+        setMessage(extResult.message, 'info');
+        return;
+      }
+      paint();
+      return;
+    }
+
     const cmdKey = commandKeyFromBlessed(ch, key);
     if (!cmdKey) return;
 
@@ -434,7 +476,7 @@ export function startEditor(filePath) {
       return;
     }
 
-    clearMessage();
+    host.emit('keypress', { ch, key });
 
     if (state.mode === 'command') {
       handleCommandKeypress(ch, key);
@@ -451,12 +493,16 @@ export function startEditor(filePath) {
 
   screen.key(['C-c'], () => shutdown(0));
   screen.on('resize', () => {
-    if (!shuttingDown) paint();
+    if (!shuttingDown) {
+      renderer.invalidate();
+      paint();
+    }
   });
 
   screen.enableKeys();
   focusInput();
   enterCommandMode();
   if (!exists) setMessage('New file (not on disk yet)', 'info');
-  paint();
+  // First frame must be synchronous so the UI appears before any key
+  paintSync();
 }

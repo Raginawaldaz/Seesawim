@@ -70,7 +70,7 @@ With no argument, Seesawim opens `demo.txt` in the project root.
 | Mode | How to enter | What it does |
 |------|----------------|--------------|
 | **Command** | `Ctrl+↑` or `Ctrl+K` | Bottom line is empty. Keys are commands (`hjkl`, counts, `i`, `:`). Real cursor is hidden; current line stays highlighted. |
-| **Insert** | `Ctrl+↓`, `Ctrl+J`, or `i` | Bottom line shows the current buffer line. The real cursor sits in that row (IME follows it). Edit there; changes sync to the viewport. `Enter` moves to the next line (creates one if needed). |
+| **Insert** | `Ctrl+↓`, `Ctrl+J`, or `i` | Bottom line shows the current buffer line. The real cursor sits in that row (IME follows it). Edit there; changes sync to the viewport. `Enter` splits the line at the caret (right half moves to a new line below). Backspace at column 0 joins with the previous line. |
 | **Ex** | `:` in command mode | Type ex commands in the bottom line (`:w`, `:q`, …), then `Enter`. |
 
 `Esc` also returns to command mode from insert / ex (handy fallback). `Ctrl+C` quits the process.
@@ -91,7 +91,10 @@ With no argument, Seesawim opens `demo.txt` in the project root.
 |-----|--------|
 | `i`, `Ctrl+↓`, or `Ctrl+J` | Insert mode |
 | `Ctrl+↑` or `Ctrl+K` | Command mode |
-| `Enter` (insert) | Finish current line, go to next line |
+| `Enter` (insert) | Split at caret; continue on the new line below |
+| `Backspace` at col 0 (insert) | Join with previous line |
+| `u` (command) | Undo (extension; see `settings.yaml`) |
+| `Ctrl+R` (command) | Redo |
 
 ### Ex commands
 
@@ -109,20 +112,46 @@ With no argument, Seesawim opens `demo.txt` in the project root.
 ```
 Seesawim/
   src/
-    main.js       # CLI entry
-    editor.js     # Mode state machine
-    ui.js         # Terminal layout (neo-blessed)
-    buffer.js     # Line buffer helpers
-    cursor.js     # Cursor clamping / motion
-    commands.js   # Command + ex parsing
-    keys.js       # Key routing helpers
+    main.js
+    core/                 # Always-on editor
+      editor.js           # Mode state machine
+      buffer.js           # TextBuffer
+      cursor.js
+      commands.js         # hjkl / i / :
+      ex.js               # :w :q :wq :x
+      keys.js
+      settings.js
+      extensions.js       # Extension host
+      ui/                 # screen / text / renderer
+    extensions/           # Optional features (1/0 in settings.yaml)
+      undo/
+      count/
+      lineNumbers/
+      cursorLine/
+      autoClearMessage/
+  settings.yaml
   demo.txt
   package.json
 ```
 
+## Extensions (`settings.yaml`)
+
+Toggle optional features with `1` (on) or `0` (off):
+
+```yaml
+extensions:
+  undo: 1              # u / Ctrl+R
+  count: 1             # digit prefixes like 5j
+  lineNumbers: 1
+  cursorLine: 1        # current-line marker
+  autoClearMessage: 1  # clear status message on next key
+```
+
+Missing file or keys fall back to all-on. Core editing still works with every flag set to `0`.
+
 ## Status
 
-Early MVP: enough to open a file, navigate, edit line-by-line, save, and quit. No visual mode, undo stack, syntax highlight, or plugins yet.
+MVP plus undo/redo, viewport rendering, and a small extension system. No visual mode or syntax highlight yet.
 
 ## License
 

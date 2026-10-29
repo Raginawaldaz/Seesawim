@@ -70,7 +70,7 @@ npm start -- "D:\Seesawim\Demo.txt"
 | 模式 | 如何进入 | 做什么 |
 |------|----------|--------|
 | **指令（Command）** | `Ctrl+↑` 或 `Ctrl+K` | 底部输入行清空。按键当指令（`hjkl`、数字前缀、`i`、`:`）。真实光标隐藏，仅高亮当前行。 |
-| **输入（Insert）** | `Ctrl+↓`、`Ctrl+J` 或 `i` | 底部显示当前行全文，真实光标停在该行（输入法跟随）。在此编辑并同步到上方。`Enter` 切到下一行（必要时新建空行）。 |
+| **输入（Insert）** | `Ctrl+↓`、`Ctrl+J` 或 `i` | 底部显示当前行全文，真实光标停在该行（输入法跟随）。在此编辑并同步到上方。`Enter` 在光标处断行（右半段落到下一行）。行首 `Backspace` 与上一行合并。 |
 | **Ex** | 指令模式下按 `:` | 在底部输入 `:w`、`:q` 等，回车执行。 |
 
 从输入 / Ex 回到指令模式也可用 `Esc`（备用）。`Ctrl+C` 直接退出进程。
@@ -91,7 +91,10 @@ npm start -- "D:\Seesawim\Demo.txt"
 |------|------|
 | `i`、`Ctrl+↓` 或 `Ctrl+J` | 进入输入模式 |
 | `Ctrl+↑` 或 `Ctrl+K` | 进入指令模式 |
-| `Enter`（输入模式） | 提交当前行并前往下一行 |
+| `Enter`（输入模式） | 在光标处断行，继续编辑新行 |
+| 行首 `Backspace`（输入模式） | 与上一行合并 |
+| `u`（指令模式） | 撤销（扩展，见 `settings.yaml`） |
+| `Ctrl+R`（指令模式） | 重做 |
 
 ### Ex 命令
 
@@ -109,20 +112,46 @@ npm start -- "D:\Seesawim\Demo.txt"
 ```
 Seesawim/
   src/
-    main.js       # 启动入口
-    editor.js     # 模式状态机
-    ui.js         # 终端布局（neo-blessed）
-    buffer.js     # 行缓冲
-    cursor.js     # 光标夹紧 / 移动
-    commands.js   # 指令与 ex 解析
-    keys.js       # 按键分流
+    main.js
+    core/                 # 始终启用的核心
+      editor.js           # 模式状态机
+      buffer.js           # TextBuffer
+      cursor.js
+      commands.js         # hjkl / i / :
+      ex.js               # :w :q :wq :x
+      keys.js
+      settings.js
+      extensions.js       # 扩展宿主
+      ui/                 # screen / text / renderer
+    extensions/           # 可选功能（settings.yaml 里 1/0）
+      undo/
+      count/
+      lineNumbers/
+      cursorLine/
+      autoClearMessage/
+  settings.yaml
   demo.txt
   package.json
 ```
 
+## 扩展（`settings.yaml`）
+
+用 `1`（开）/ `0`（关）切换可选功能：
+
+```yaml
+extensions:
+  undo: 1              # u / Ctrl+R
+  count: 1             # 数字前缀，如 5j
+  lineNumbers: 1
+  cursorLine: 1        # 当前行标记
+  autoClearMessage: 1  # 下一次按键清除状态栏消息
+```
+
+文件缺失或缺少某个键时默认全部开启。所有开关设为 `0` 时核心编辑仍可用。
+
 ## 现状
 
-早期 MVP：能打开文件、移动、按行编辑、保存、退出。尚无可视模式、撤销栈、语法高亮或插件。
+MVP，已有撤销/重做、视口渲染与小型扩展系统。尚无可视模式或语法高亮。
 
 ## 许可
 

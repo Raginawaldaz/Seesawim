@@ -1,0 +1,7 @@
+# Seesawim extension switches (1 = on, 0 = off)
+extensions:
+  undo: 1
+  count: 1
+  lineNumbers: 1
+  cursorLine: 1
+  autoClearMessage: 1
